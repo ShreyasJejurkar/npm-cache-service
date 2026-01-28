@@ -29,9 +29,9 @@ jobs:
         ./verify-cache.sh
 
     - name: Zip the cache folder
-      shell: bash
+      shell: pwsh
       run: |
-        zip -r offline-npm-cache.zip cache
+        Compress-Archive -Path cache -DestinationPath offline-npm-cache.zip -Force
 
     - name: Upload to transfer.sh
       id: upload
