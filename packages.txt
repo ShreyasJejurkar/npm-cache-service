@@ -6,6 +6,7 @@
 @emotion/styled@^11.14.1
 @eslint/js@^9.39.2
 @fontsource/roboto@^5.2.9
+vite
 @hookform/resolvers@^5.2.2
 @module-federation/enhanced@^0.23.0
 @module-federation/runtime@^0.23.0
