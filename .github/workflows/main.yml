@@ -1,4 +1,4 @@
-name: Prefetch and Upload NPM Cache (Windows)
+name: Pull NPM packages
 
 on:
   workflow_dispatch:
