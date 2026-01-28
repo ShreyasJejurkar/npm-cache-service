@@ -32,13 +32,13 @@ jobs:
       shell: pwsh
       run: |
         Compress-Archive -Path cache -DestinationPath offline-npm-cache.zip -Force
+    
+    - name: Upload cache zip as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: offline-npm-cache
+        path: offline-npm-cache.zip
 
-    - name: Upload to transfer.sh
-      id: upload
-      shell: bash
-      run: |
-        LINK=$(curl --upload-file ./offline-npm-cache.zip https://transfer.sh/offline-npm-cache.zip)
-        echo "cache_link=$LINK" >> $GITHUB_OUTPUT
 
     - name: Show Shareable Link
       shell: bash
