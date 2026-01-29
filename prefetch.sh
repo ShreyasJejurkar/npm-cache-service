@@ -53,7 +53,7 @@ echo "--------------------------------------"
 
 # THIS is the important line — pulls full dependency tree
 npm install "${INSTALL_PKGS[@]}" --legacy-peer-deps
-npm install @module-federation/vite --legacy-peer-deps
+
 echo "--------------------------------------"
 echo "🧹 Cleaning temp project (keeping cache)"
 cd "$BASE_DIR"
