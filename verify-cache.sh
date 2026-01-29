@@ -47,7 +47,7 @@ while IFS= read -r pkg || [[ -n "$pkg" ]]; do
   echo -n "Testing $full_pkg ... "
 
   # Dry-run offline install (does not modify node_modules)
-  if npm install "$full_pkg" --offline --prefer-offline --ignore-scripts --no-audit >/dev/null 2>&1; then
+  if npm install "$full_pkg" --offline --prefer-offline --ignore-scripts --no-audit 2>&1; then
     echo "✅ OK"
   else
     echo "❌ MISSING"
