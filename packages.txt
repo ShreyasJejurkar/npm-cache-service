@@ -6,7 +6,7 @@
 @emotion/styled@^11.14.1
 @eslint/js@^9.39.2
 @fontsource/roboto@^5.2.9
-vite
+vite@7.1.7
 @rspack/core
 hono
 @testing-library/dom
