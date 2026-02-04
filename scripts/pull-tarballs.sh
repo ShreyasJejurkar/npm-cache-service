@@ -62,24 +62,26 @@ npm install "${INSTALL_PKGS[@]}" --package-lock-only --legacy-peer-deps >/dev/nu
 # Extract package-name, version, and resolved URLs from package-lock.json using Node (portable)
 # Output format: tab-separated lines: <name>\t<version>\t<resolved-url> (one per line)
 RESOLVED_TSV="$TMP_DIR/resolved_pkgs.tsv"
-node -e '
-const fs=require("fs");
-const data=fs.readFileSync("package-lock.json","utf8");
+node <<'NODE' > "$RESOLVED_TSV"
+const fs = require('fs');
 let p;
-try{ p=JSON.parse(data); }catch(e){process.exit(0);}
-const lines=[];
-function add(name, node){
-  if(node && typeof node.resolved === "string"){
-    const version = node.version || "";
-    lines.push([name, version, node.resolved].join("\t"));
+try {
+  p = JSON.parse(fs.readFileSync('package-lock.json','utf8'));
+} catch (e) {
+  // no lockfile or parse error
+  process.exit(0);
+}
+const lines = [];
+function addLine(name, version, resolved){
+  if(resolved && typeof resolved === 'string'){
+    lines.push([name || '', version || '', resolved].join('\t'));
   }
 }
-// npm v2+ lock has a "packages" map where keys can include node_modules paths
+// npm v2+ lock has a "packages" map
 if(p.packages && typeof p.packages === 'object'){
-  for(const [pathKey, node] of Object.entries(p.packages)){
-    // pathKey like "node_modules/pkg" or "" (root)
+  for(const node of Object.values(p.packages)){
     if(node && node.name && node.version && node.resolved){
-      lines.push([node.name, node.version, node.resolved].join('\t'));
+      addLine(node.name, node.version, node.resolved);
     }
   }
 }
@@ -88,24 +90,24 @@ function walkDeps(obj){
   if(!obj || typeof obj !== 'object') return;
   for(const [name, node] of Object.entries(obj)){
     if(node && node.resolved){
-      lines.push([name, node.version || '', node.resolved].join('\t'));
+      addLine(name, node.version || '', node.resolved);
     }
     if(node && node.dependencies) walkDeps(node.dependencies);
   }
 }
 if(p.dependencies) walkDeps(p.dependencies);
 // remove duplicates (keep first)
-const seen=new Set();
-const out=[];
+const seen = new Set();
+const out = [];
 for(const l of lines){
   if(!l) continue;
-  const key=l.split('\t')[2] || l; // use resolved url as uniqueness key
+  const key = (l.split('\t')[2] || l);
   if(seen.has(key)) continue;
   seen.add(key);
   out.push(l);
 }
 process.stdout.write(out.join('\n'));
-' > "$RESOLVED_TSV"
+NODE
 
 # Helper: downloader that works on Windows Git Bash (curl/wget/powershell fallback)
 download_file(){
