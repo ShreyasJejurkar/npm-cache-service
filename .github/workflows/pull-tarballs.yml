@@ -1,0 +1,36 @@
+name: Pull and Upload Tarballs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pull-tarballs-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "20"
+
+      - name: Run pull script (Git Bash)
+        shell: bash
+        run:
+          |
+          chmod +x ./scripts/pull-tarballs.sh
+          ./scripts/pull-tarballs.sh
+
+      - name: Create zip of tarballs
+        shell: pwsh
+        run:
+          |
+          Compress-Archive -Path tarballs -DestinationPath offline-tarballs.zip -Force
+
+      - name: Upload tarballs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-tarballs
+          path: offline-tarballs.zip

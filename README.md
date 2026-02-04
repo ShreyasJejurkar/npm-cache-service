@@ -194,6 +194,52 @@ You can also manually zip and share:
 zip -r offline-npm-cache.zip cache/
 ```
 
+## Export Tarballs for Private Registries 🔁
+
+If you need to push package tarballs (and their dependencies) to a private registry or artifact feed (for example, Azure DevOps Artifacts), use the included scripts to produce a set of .tgz files you can publish.
+
+1. Generate tarballs for all packages listed in `packages.txt`:
+
+```bash
+chmod +x ./scripts/pull-tarballs.sh
+./scripts/pull-tarballs.sh
+```
+
+This will create a `tarballs/` directory containing unique package tarballs for each resolved dependency. The script works by creating a temporary project, generating a `package-lock.json`, extracting resolved tarball URLs, and downloading them. It also attempts `npm pack` as a fallback for edge cases.
+
+2. (Optional) Publish tarballs to an Azure DevOps feed:
+
+- Set `AZURE_REGISTRY` to your feed's registry URL (for example: `https://pkgs.dev.azure.com/ORG/_packaging/FEED/npm/registry/`)
+- Optionally set `NPM_TOKEN` (or ensure `npm` is already authenticated)
+
+There are two helper scripts:
+
+- `scripts/publish-to-azure.sh`: publishes tarballs found in `./tarballs` (used by the CI helper before). Example:
+
+```bash
+chmod +x ./scripts/publish-to-azure.sh
+AZURE_REGISTRY="https://pkgs.dev.azure.com/ORG/_packaging/FEED/npm/registry/" \
+NPM_TOKEN="<token>" \
+./scripts/publish-to-azure.sh
+```
+
+- `scripts/publish-folder-to-azure.sh`: new local helper to publish an extracted folder of `.tgz` files (useful on a work laptop). Example:
+
+```bash
+# publish all .tgz from the extracted folder (dry-run first)
+chmod +x ./scripts/publish-folder-to-azure.sh
+./scripts/publish-folder-to-azure.sh /path/to/extracted/tarballs --dry-run
+
+# when ready:
+AZURE_REGISTRY="https://pkgs.dev.azure.com/ORG/_packaging/FEED/npm/registry/" \
+NPM_TOKEN="<token>" \
+./scripts/publish-folder-to-azure.sh /path/to/extracted/tarballs
+```
+
+The script will create a temporary `.npmrc` if `NPM_TOKEN` is provided and will not persist credentials. It prints a short summary of successes and failures.
+
+> Note: Ensure you have publish rights on the target feed and consult Azure DevOps docs for feed-specific auth details.
+
 ## GitHub Actions Workflow
 
 The included workflow ([.github/workflows/prefetch.yml](.github/workflows/prefetch.yml)) automates cache generation:
@@ -217,6 +263,22 @@ To use:
 3. Select **Prefetch and Upload NPM Cache (Windows)**
 4. Click **Run workflow**
 5. Wait for completion and download the link
+
+### Pull tarballs workflow ✅
+
+A separate workflow ([.github/workflows/pull-tarballs.yml](.github/workflows/pull-tarballs.yml)) is provided to:
+
+- Run `./scripts/pull-tarballs.sh` on a Windows runner (Git Bash) to produce a `tarballs/` directory of `.tgz` files for all packages and dependencies.
+- Create a zipped artifact `offline-tarballs.zip` that contains all downloaded `.tgz` files and upload it as a workflow artifact named `offline-tarballs`.
+
+To run it manually:
+
+1. Go to **Actions** → **Pull and Upload Tarballs** → **Run workflow**
+2. Download the `offline-tarballs` artifact from the workflow run (it will be a `.zip` you can extract locally to obtain the `.tgz` files)
+
+> Note: The workflow does not automatically publish to private feeds. Use `scripts/publish-to-azure.sh` locally or in a separate pipeline if you want to upload the tarballs to an Azure DevOps feed (this action is not performed by the workflow by default).
+
+This workflow runs on `windows-latest` and uses Git Bash to execute the scripts for Windows compatibility.
 
 ## Platform-Specific Notes
 
