@@ -6,6 +6,7 @@ on:
 jobs:
   pull-tarballs-windows:
     runs-on: windows-latest
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repo
@@ -16,16 +17,40 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Configure npm for better performance
+        shell: pwsh
+        run:
+          |
+          npm config set loglevel=warn
+          npm config set progress=false
+          npm config set fetch-timeout=60000
+          npm config set fetch-retry-mintimeout=10000
+          npm config set fetch-retry-maxtimeout=120000
+
       - name: Run pull script (PowerShell)
-        shell: bash
-        run: |
+        shell: pwsh
+        run:
+          |
           pwsh -NoProfile -File ./scripts/pull-tarballs.ps1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Pull tarballs script failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
 
       - name: Create zip of tarballs
         shell: pwsh
         run:
           |
-          Compress-Archive -Path tarballs -DestinationPath offline-tarballs.zip -Force
+          if (Test-Path tarballs) {
+            $tgzCount = @(Get-ChildItem -Path tarballs -Filter '*.tgz' -ErrorAction SilentlyContinue).Count
+            Write-Host "📦 Found $tgzCount .tgz files to compress"
+            Compress-Archive -Path tarballs -DestinationPath offline-tarballs.zip -Force
+            $zipSize = (Get-Item offline-tarballs.zip).Length / 1MB
+            Write-Host "✅ Created offline-tarballs.zip ($([Math]::Round($zipSize, 2)) MB)"
+          } else {
+            Write-Error "tarballs directory not found"
+            exit 1
+          }
 
       - name: Upload tarballs artifact
         uses: actions/upload-artifact@v4
