@@ -11,9 +11,9 @@ $ErrorActionPreference = 'Stop'
 #  - TMP_DIR (defaults to ./npm-pull-tarballs-tmp)
 
 $BASE_DIR = (Get-Location).Path
-$PACKAGES_FILE = $env:PACKAGES_FILE -or (Join-Path $BASE_DIR 'packages.txt')
-$TMP_DIR = $env:TMP_DIR -or (Join-Path $BASE_DIR 'npm-pull-tarballs-tmp')
-$TAR_DIR = $env:TAR_DIR -or (Join-Path $BASE_DIR 'tarballs')
+if (-not [string]::IsNullOrEmpty($env:PACKAGES_FILE)) { $PACKAGES_FILE = $env:PACKAGES_FILE } else { $PACKAGES_FILE = Join-Path $BASE_DIR 'packages.txt' }
+if (-not [string]::IsNullOrEmpty($env:TMP_DIR)) { $TMP_DIR = $env:TMP_DIR } else { $TMP_DIR = Join-Path $BASE_DIR 'npm-pull-tarballs-tmp' }
+if (-not [string]::IsNullOrEmpty($env:TAR_DIR)) { $TAR_DIR = $env:TAR_DIR } else { $TAR_DIR = Join-Path $BASE_DIR 'tarballs' }
 
 Write-Host "🔽 Pulling tarballs for packages listed in $PACKAGES_FILE"
 
