@@ -61,84 +61,52 @@ if ($INSTALL_PKGS.Count -eq 0) { Write-Error "No packages found in $PACKAGES_FIL
 & npm install $INSTALL_PKGS --package-lock-only --legacy-peer-deps | Out-Null
 
 # Extract resolved URLs using a small Node script (portable)
-$RESOLVED_TSV = Join-Path $TMP_DIR 'resolved_pkgs.tsv'
+# Build a unique list of packages@version from package-lock.json and use `npm pack` to fetch tarballs
+$PKG_LIST = Join-Path $TMP_DIR 'pkg_list.txt'
 $nodeScript = @'
 const fs = require('fs');
 let p;
 try { p = JSON.parse(fs.readFileSync('package-lock.json','utf8')); } catch(e){ process.exit(0); }
 const lines = [];
-function addLine(name, version, resolved){ if(resolved && typeof resolved === 'string'){ lines.push([name || '', version || '', resolved].join('\t')); }}
+function add(name, version){ if(name && version){ lines.push(name + '\t' + version); }}
 if(p.packages && typeof p.packages === 'object'){
   for(const node of Object.values(p.packages)){
-    if(node && node.name && node.version && node.resolved){ addLine(node.name, node.version, node.resolved); }
+    if(node && node.name && node.version){ add(node.name, node.version); }
   }
 }
-function walkDeps(obj){ if(!obj || typeof obj !== 'object') return; for(const [name, node] of Object.entries(obj)){ if(node && node.resolved){ addLine(name, node.version || '', node.resolved); } if(node && node.dependencies) walkDeps(node.dependencies); }}
+function walkDeps(obj){ if(!obj || typeof obj !== 'object') return; for(const [name, node] of Object.entries(obj)){ if(node && node.version){ add(name, node.version); } if(node && node.dependencies) walkDeps(node.dependencies); }}
 if(p.dependencies) walkDeps(p.dependencies);
 const seen = new Set(); const out = [];
-for(const l of lines){ if(!l) continue; const key = (l.split('\t')[2] || l); if(seen.has(key)) continue; seen.add(key); out.push(l); }
+for(const l of lines){ const key = l; if(seen.has(key)) continue; seen.add(key); out.push(l); }
 process.stdout.write(out.join('\n'));
 '@
 
 Set-Content -Path (Join-Path $TMP_DIR 'dumped-node-script.js') -Value $nodeScript -NoNewline
-& node (Join-Path $TMP_DIR 'dumped-node-script.js') | Out-File -FilePath $RESOLVED_TSV -Encoding utf8
-
-function Download-File([string]$url, [string]$dest) {
-    Try {
-        if (Get-Command curl -ErrorAction SilentlyContinue) {
-            & curl -L --fail -sS -o $dest $url
-        } elseif (Get-Command wget -ErrorAction SilentlyContinue) {
-            & wget -q -O $dest $url
-        } else {
-            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
-        }
-        return $true
-    } catch {
-        return $false
-    }
-}
+& node (Join-Path $TMP_DIR 'dumped-node-script.js') | Out-File -FilePath $PKG_LIST -Encoding utf8
 
 $count = 0
-if (Test-Path $RESOLVED_TSV) {
-    Get-Content -Path $RESOLVED_TSV -ErrorAction SilentlyContinue | ForEach-Object {
+if (Test-Path $PKG_LIST) {
+    Get-Content -Path $PKG_LIST -ErrorAction SilentlyContinue | ForEach-Object {
         if ([string]::IsNullOrWhiteSpace($_)) { return }
         $parts = $_ -split "\t"
         $name = $parts[0]
         $version = $parts[1]
-        $url = $parts[2]
-        if ([string]::IsNullOrWhiteSpace($url)) { return }
-        if ($url -notmatch '^https?://') { Write-Host "Skipping non-HTTP resolved entry for ${name}@${version}: ${url}"; return }
+        $pkgSpec = if ([string]::IsNullOrWhiteSpace($version)) { $name } else { "${name}@${version}" }
         $sanitized_name = ($name -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
-        $short_url = $url -split '\?' | Select-Object -First 1
         $dest = Join-Path $TAR_DIR ("$($sanitized_name)-$version.tgz")
         if (Test-Path $dest) { Write-Host "⏭️  Already have $(Split-Path $dest -Leaf); skipping"; return }
-        Write-Host "⬇️  Downloading ${name}@${version} → $dest"
-        if (Download-File $url $dest) { $count += 1 } else { Write-Host "⚠️  Failed to download ${url}; will attempt npm pack fallback for ${name}@${version}" }
-    }
-}
-
-# npm pack fallback for packages that may not have a tarball or failed download
-foreach ($pkg in $INSTALL_PKGS) {
-    $basepkg = ($pkg -split '#')[0]
-    if ($basepkg -match '@') { $shortname = ($basepkg -split '@')[0] } else { $shortname = $basepkg }
-    $sanitized_name = ($shortname -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
-    $version = ''
-    if ($basepkg -match '@') { $version = ($basepkg -split '@')[-1] }
-    $dest = Join-Path $TAR_DIR ("$($sanitized_name)-$version.tgz")
-    if (Test-Path $dest) { continue }
-    Write-Host "🧩 Attempting npm pack fallback for $pkg"
-    $packOk = $false
-    try {
-        & npm pack $pkg | Out-Null
-        $packOk = $true
-    } catch { $packOk = $false }
-    if ($packOk) {
-        $tgzfile = Get-ChildItem -Path (Get-Location) -Filter '*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($tgzfile) {
-            Try { Move-Item -Path $tgzfile.FullName -Destination $TAR_DIR -Force; Write-Host "📦 Packed $($tgzfile.Name)"; $count += 1 } Catch { Write-Host "Could not move $($tgzfile.Name)" }
+        Write-Host "🧩 npm pack $pkgSpec"
+        try {
+            & npm pack $pkgSpec | Out-Null
+            $tgzfile = Get-ChildItem -Path (Get-Location) -Filter '*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($tgzfile) {
+                Move-Item -Path $tgzfile.FullName -Destination $dest -Force
+                Write-Host "📦 Packed $($tgzfile.Name)"
+                $count += 1
+            }
+        } catch {
+            Write-Host "npm pack failed for $pkgSpec"
         }
-    } else {
-        Write-Host "npm pack failed or produced no tarball for $pkg"
     }
 }
 
