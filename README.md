@@ -200,9 +200,8 @@ If you need to push package tarballs (and their dependencies) to a private regis
 
 1. Generate tarballs for all packages listed in `packages.txt`:
 
-```bash
-chmod +x ./scripts/pull-tarballs.sh
-./scripts/pull-tarballs.sh
+```powershell
+pwsh -NoProfile -File ./scripts/pull-tarballs.ps1
 ```
 
 This will create a `tarballs/` directory containing unique package tarballs for each resolved dependency. The script works by creating a temporary project, generating a `package-lock.json`, extracting resolved tarball URLs, and downloading them. It also attempts `npm pack` as a fallback for edge cases.
@@ -268,7 +267,7 @@ To use:
 
 A separate workflow ([.github/workflows/pull-tarballs.yml](.github/workflows/pull-tarballs.yml)) is provided to:
 
-- Run `./scripts/pull-tarballs.sh` on a Windows runner (Git Bash) to produce a `tarballs/` directory of `.tgz` files for all packages and dependencies.
+- Run `pwsh -NoProfile -File ./scripts/pull-tarballs.ps1` on a Windows runner to produce a `tarballs/` directory of `.tgz` files for all packages and dependencies.
 - Create a zipped artifact `offline-tarballs.zip` that contains all downloaded `.tgz` files and upload it as a workflow artifact named `offline-tarballs`.
 
 To run it manually:

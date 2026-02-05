@@ -16,12 +16,10 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Run pull script (Git Bash)
+      - name: Run pull script (PowerShell)
         shell: bash
-        run:
-          |
-          chmod +x ./scripts/pull-tarballs.sh
-          ./scripts/pull-tarballs.sh
+        run: |
+          pwsh -NoProfile -File ./scripts/pull-tarballs.ps1
 
       - name: Create zip of tarballs
         shell: pwsh
