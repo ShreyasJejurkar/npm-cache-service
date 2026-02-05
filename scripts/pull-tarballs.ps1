@@ -45,7 +45,7 @@ Get-Content -Path $PACKAGES_FILE -ErrorAction Stop | ForEach-Object {
             Write-Host "⚠️  Could not resolve latest version for $pkg; adding as-is"
             $full_pkg = $pkg
         } else {
-            $full_pkg = "$pkg@$version"
+            $full_pkg = "${pkg}@${version}"
             Write-Host "📦 $pkg → resolved latest: $full_pkg"
         }
     } else {
@@ -107,13 +107,13 @@ if (Test-Path $RESOLVED_TSV) {
         $version = $parts[1]
         $url = $parts[2]
         if ([string]::IsNullOrWhiteSpace($url)) { return }
-        if ($url -notmatch '^https?://') { Write-Host "Skipping non-HTTP resolved entry for $name@$version: $url"; return }
+        if ($url -notmatch '^https?://') { Write-Host "Skipping non-HTTP resolved entry for ${name}@${version}: ${url}"; return }
         $sanitized_name = ($name -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
         $short_url = $url -split '\?' | Select-Object -First 1
         $dest = Join-Path $TAR_DIR ("$($sanitized_name)-$version.tgz")
         if (Test-Path $dest) { Write-Host "⏭️  Already have $(Split-Path $dest -Leaf); skipping"; return }
-        Write-Host "⬇️  Downloading $name@$version → $dest"
-        if (Download-File $url $dest) { $count += 1 } else { Write-Host "⚠️  Failed to download $url; will attempt npm pack fallback for $name@$version" }
+        Write-Host "⬇️  Downloading ${name}@${version} → $dest"
+        if (Download-File $url $dest) { $count += 1 } else { Write-Host "⚠️  Failed to download ${url}; will attempt npm pack fallback for ${name}@${version}" }
     }
 }
 
