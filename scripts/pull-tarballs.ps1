@@ -84,30 +84,108 @@ process.stdout.write(out.join('\n'));
 Set-Content -Path (Join-Path $TMP_DIR 'dumped-node-script.js') -Value $nodeScript -NoNewline
 & node (Join-Path $TMP_DIR 'dumped-node-script.js') | Out-File -FilePath $PKG_LIST -Encoding utf8
 
+## New approach: recursively resolve dependencies via `npm view` and `npm pack`
 $count = 0
+$processed = [System.Collections.Generic.HashSet[string]]::new()
+$queue = [System.Collections.Generic.Queue[string]]::new()
+
+# Seed queue from PKG_LIST or INSTALL_PKGS
 if (Test-Path $PKG_LIST) {
-    Get-Content -Path $PKG_LIST -ErrorAction SilentlyContinue | ForEach-Object {
-        if ([string]::IsNullOrWhiteSpace($_)) { return }
+    Get-Content -Path $PKG_LIST -ErrorAction SilentlyContinue | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
         $parts = $_ -split "\t"
         $name = $parts[0]
         $version = $parts[1]
-        $pkgSpec = if ([string]::IsNullOrWhiteSpace($version)) { $name } else { "${name}@${version}" }
-        $sanitized_name = ($name -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
-        $dest = Join-Path $TAR_DIR ("$($sanitized_name)-$version.tgz")
-        if (Test-Path $dest) { Write-Host "⏭️  Already have $(Split-Path $dest -Leaf); skipping"; return }
-        Write-Host "🧩 npm pack $pkgSpec"
-        try {
-            & npm pack $pkgSpec | Out-Null
-            $tgzfile = Get-ChildItem -Path (Get-Location) -Filter '*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($tgzfile) {
-                Move-Item -Path $tgzfile.FullName -Destination $dest -Force
-                Write-Host "📦 Packed $($tgzfile.Name)"
-                $count += 1
-            }
-        } catch {
-            Write-Host "npm pack failed for $pkgSpec"
-        }
+        $spec = if ([string]::IsNullOrWhiteSpace($version)) { $name } else { "${name}@${version}" }
+        $queue.Enqueue($spec)
     }
+} else {
+    foreach ($p in $INSTALL_PKGS) { $queue.Enqueue($p) }
+}
+
+$failedFile = Join-Path $TMP_DIR 'failed-packs.txt'
+if (Test-Path $failedFile) { Remove-Item -Force $failedFile }
+
+Write-Host "ℹ️  Resolving and packing packages (this may take a while)"
+while ($queue.Count -gt 0) {
+    $spec = $queue.Dequeue()
+    if ($processed.Contains($spec)) { continue }
+    # Resolve exact version if spec includes a range like ^ or ~
+    $resolvedVersion = $null
+    $nameOnly = $spec
+    if ($spec -match '@' -and $spec -notmatch '^@') {
+        # scoped or name@range
+        $nameOnly = ($spec -split '@')[0]
+    } elseif ($spec -match '^@') {
+        # scoped package like @scope/name@range
+        $idx = $spec.LastIndexOf('@')
+        if ($idx -gt 0) { $nameOnly = $spec.Substring(0,$idx) }
+    }
+    try {
+        $resolvedVersion = (& npm view $spec version 2>$null) -join "" | Out-String
+        $resolvedVersion = $resolvedVersion.Trim()
+    } catch {
+        Write-Host "⚠️  Could not resolve version for $spec"
+        Add-Content -Path $failedFile -Value $spec
+        continue
+    }
+    if ([string]::IsNullOrWhiteSpace($resolvedVersion)) {
+        Write-Host "⚠️  No version resolved for $spec"
+        Add-Content -Path $failedFile -Value $spec
+        continue
+    }
+    $fullSpec = "${nameOnly}@${resolvedVersion}"
+    if ($processed.Contains($fullSpec)) { continue }
+
+    # pack
+    $sanitized_name = ($nameOnly -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
+    $destName = "$($sanitized_name)-$resolvedVersion.tgz"
+    $dest = Join-Path $TAR_DIR $destName
+    if (Test-Path $dest) { Write-Host "⏭️  Already have $destName; skipping"; $processed.Add($fullSpec) | Out-Null; continue }
+    Write-Host "🧩 npm pack $fullSpec"
+    try {
+        $packOutput = & npm pack $fullSpec 2>&1 | Out-String
+        $tgzfile = Get-ChildItem -Path (Get-Location) -Filter '*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($tgzfile) {
+            $movedPath = Join-Path $TAR_DIR $tgzfile.Name
+            Move-Item -Path $tgzfile.FullName -Destination $movedPath -Force
+            if ($tgzfile.Name -ne $destName) { Move-Item -Path $movedPath -Destination $dest -Force }
+            Write-Host "📦 Packed $($tgzfile.Name) -> $destName"
+            $count += 1
+        } else {
+            Write-Host "⚠️  npm pack produced no .tgz for $fullSpec"
+            Add-Content -Path $failedFile -Value $fullSpec
+            Write-Host $packOutput
+        }
+    } catch {
+        Write-Host "⚠️  npm pack failed for $fullSpec"
+        Add-Content -Path $failedFile -Value $fullSpec
+        Write-Host $_.Exception.Message
+        continue
+    }
+
+    # mark processed
+    $processed.Add($fullSpec) | Out-Null
+
+    # fetch dependencies and enqueue them
+    try {
+        $depsJson = (& npm view $fullSpec dependencies --json 2>$null) -join "" | Out-String
+        if (-not [string]::IsNullOrWhiteSpace($depsJson)) {
+            $deps = $null
+            try { $deps = ConvertFrom-Json $depsJson } catch { $deps = $null }
+            if ($deps) {
+                foreach ($k in $deps.PSObject.Properties.Name) {
+                    $range = $deps.$k
+                    $depSpec = "$k@$range"
+                    try {
+                        $depVersion = (& npm view $depSpec version 2>$null) -join "" | Out-String
+                        $depVersion = $depVersion.Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($depVersion)) { $queue.Enqueue("${k}@${depVersion}") }
+                    } catch { }
+                }
+            }
+        }
+    } catch { }
+
 }
 
 Write-Host "--------------------------------------"
