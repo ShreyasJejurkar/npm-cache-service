@@ -53,6 +53,7 @@ Write-Host ""
 
 $global:success = 0
 $global:failed = 0
+$global:failedList = @()
 $failedList = @()
 
 function Resolve-Version {
