@@ -1,200 +1,213 @@
 #!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+Downloads npm packages using direct registry API with PowerShell.
+
+.DESCRIPTION
+Uses PowerShell Invoke-WebRequest to directly query npm registry
+and download tarballs. No npm CLI dependency needed.
+
+.EXAMPLE
+pwsh -NoProfile -File ./scripts/pull-tarballs.ps1
+#>
+
 Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
 
-# Pull package tarballs (and dependencies) for packages listed in packages.txt
-# Produces tarballs/ directory with unique .tgz files for each resolved package
-# Usage: pwsh -NoProfile -File ./scripts/pull-tarballs.ps1
-# Optional env vars:
-#  - PACKAGES_FILE (defaults to ./packages.txt)
-#  - TAR_DIR (defaults to ./tarballs)
-#  - TMP_DIR (defaults to ./npm-pull-tarballs-tmp)
-
+# Configuration
 $BASE_DIR = (Get-Location).Path
-if (-not [string]::IsNullOrEmpty($env:PACKAGES_FILE)) { $PACKAGES_FILE = $env:PACKAGES_FILE } else { $PACKAGES_FILE = Join-Path $BASE_DIR 'packages.txt' }
-if (-not [string]::IsNullOrEmpty($env:TMP_DIR)) { $TMP_DIR = $env:TMP_DIR } else { $TMP_DIR = Join-Path $BASE_DIR 'npm-pull-tarballs-tmp' }
-if (-not [string]::IsNullOrEmpty($env:TAR_DIR)) { $TAR_DIR = $env:TAR_DIR } else { $TAR_DIR = Join-Path $BASE_DIR 'tarballs' }
+$PACKAGES_FILE = Join-Path $BASE_DIR 'packages.txt'
+$TAR_DIR = Join-Path $BASE_DIR 'tarballs'
+$REGISTRY = "https://registry.npmjs.org"
 
-Write-Host "🔽 Pulling tarballs for packages listed in $PACKAGES_FILE"
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║      Downloading NPM Packages - Direct Registry API        ║" -ForegroundColor Cyan
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
 
-if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Write-Error "Node.js is required"; exit 1 }
-if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Write-Error "npm is required"; exit 1 }
-
-# Ensure cleanup and directories
-if (Test-Path $TMP_DIR) { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TMP_DIR }
-New-Item -ItemType Directory -Force -Path $TMP_DIR | Out-Null
-New-Item -ItemType Directory -Force -Path $TAR_DIR | Out-Null
-Push-Location $TMP_DIR
-
-# Init minimal project to generate package-lock.json
-& npm init -y | Out-Null
-
-$INSTALL_PKGS = @()
-Get-Content -Path $PACKAGES_FILE -ErrorAction Stop | ForEach-Object {
-    $line = $_.Trim() -replace "`r",""
-    if ([string]::IsNullOrWhiteSpace($line)) { return }
-    if ($line.StartsWith('#')) { return }
-    $pkg = $line
-    if ($pkg -notmatch '@') {
-        $version = $null
-        try {
-            $version = (& npm view $pkg dist-tags.latest) -join "" | Out-String
-            $version = $version.Trim()
-        } catch { $version = $null }
-        if ([string]::IsNullOrWhiteSpace($version)) {
-            Write-Host "⚠️  Could not resolve latest version for $pkg; adding as-is"
-            $full_pkg = $pkg
-        } else {
-            $full_pkg = "${pkg}@${version}"
-            Write-Host "📦 $pkg → resolved latest: $full_pkg"
+# Read packages
+Write-Host "📋 Reading packages.txt..." -ForegroundColor Yellow
+$packages = @()
+if (Test-Path $PACKAGES_FILE) {
+    Get-Content $PACKAGES_FILE | ForEach-Object {
+        $line = $_.Trim() -replace "`r", ""
+        if ($line -and -not $line.StartsWith('#')) {
+            $packages += $line
         }
-    } else {
-        $full_pkg = $pkg
-        Write-Host "📦 Using specified version: $full_pkg"
     }
-    $INSTALL_PKGS += $full_pkg
 }
 
-if ($INSTALL_PKGS.Count -eq 0) { Write-Error "No packages found in $PACKAGES_FILE"; Pop-Location; exit 1 }
-
-# Generate lock file (does not download tarballs)
-& npm install $INSTALL_PKGS --package-lock-only --legacy-peer-deps | Out-Null
-
-# Extract resolved URLs using a small Node script (portable)
-# Build a unique list of packages@version from package-lock.json and use `npm pack` to fetch tarballs
-$PKG_LIST = Join-Path $TMP_DIR 'pkg_list.txt'
-$nodeScript = @'
-const fs = require('fs');
-let p;
-try { p = JSON.parse(fs.readFileSync('package-lock.json','utf8')); } catch(e){ process.exit(0); }
-const lines = [];
-function add(name, version){ if(name && version){ lines.push(name + '\t' + version); }}
-if(p.packages && typeof p.packages === 'object'){
-  for(const node of Object.values(p.packages)){
-    if(node && node.name && node.version){ add(node.name, node.version); }
-  }
+if ($packages.Count -eq 0) {
+    Write-Host "❌ No packages found in packages.txt" -ForegroundColor Red
+    exit 1
 }
-function walkDeps(obj){ if(!obj || typeof obj !== 'object') return; for(const [name, node] of Object.entries(obj)){ if(node && node.version){ add(name, node.version); } if(node && node.dependencies) walkDeps(node.dependencies); }}
-if(p.dependencies) walkDeps(p.dependencies);
-const seen = new Set(); const out = [];
-for(const l of lines){ const key = l; if(seen.has(key)) continue; seen.add(key); out.push(l); }
-process.stdout.write(out.join('\n'));
-'@
 
-Set-Content -Path (Join-Path $TMP_DIR 'dumped-node-script.js') -Value $nodeScript -NoNewline
-& node (Join-Path $TMP_DIR 'dumped-node-script.js') | Out-File -FilePath $PKG_LIST -Encoding utf8
+Write-Host "✅ Found $($packages.Count) packages to download"
+Write-Host ""
 
-## New approach: recursively resolve dependencies via `npm view` and `npm pack`
-$count = 0
-$processed = [System.Collections.Generic.HashSet[string]]::new()
-$queue = [System.Collections.Generic.Queue[string]]::new()
+# Setup directory
+New-Item -ItemType Directory -Path $TAR_DIR -Force -ErrorAction SilentlyContinue | Out-Null
 
-# Seed queue from PKG_LIST or INSTALL_PKGS
-if (Test-Path $PKG_LIST) {
-    Get-Content -Path $PKG_LIST -ErrorAction SilentlyContinue | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object {
-        $parts = $_ -split "\t"
+# Download each package
+Write-Host "📦 Downloading packages..." -ForegroundColor Yellow
+Write-Host ""
+
+$success = 0
+$failed = 0
+$failedList = @()
+
+function Resolve-Version {
+    param($metadata, $requestedVersion)
+    if (-not $requestedVersion -or $requestedVersion -match '^[\^~]') {
+        if ($metadata.'dist-tags' -and $metadata.'dist-tags'.latest) {
+            return $metadata.'dist-tags'.latest
+        }
+    }
+    return $requestedVersion
+}
+
+$processed = @{}
+
+function Download-Package {
+    param($spec)
+
+    # Parse package name and version
+    $name = $spec
+    $version = $null
+
+    if ($name -match '^@[^/]+/[^@]+@') {
+        $lastAt = $name.LastIndexOf('@')
+        $version = $name.Substring($lastAt + 1)
+        $name = $name.Substring(0, $lastAt)
+    } elseif ($name -match '@' -and -not $name.StartsWith('@')) {
+        $parts = $name -split '@'
         $name = $parts[0]
         $version = $parts[1]
-        $spec = if ([string]::IsNullOrWhiteSpace($version)) { $name } else { "${name}@${version}" }
-        $queue.Enqueue($spec)
     }
-} else {
-    foreach ($p in $INSTALL_PKGS) { $queue.Enqueue($p) }
-}
 
-$failedFile = Join-Path $TMP_DIR 'failed-packs.txt'
-if (Test-Path $failedFile) { Remove-Item -Force $failedFile }
-
-Write-Host "ℹ️  Resolving and packing packages (this may take a while)"
-while ($queue.Count -gt 0) {
-    $spec = $queue.Dequeue()
-    if ($processed.Contains($spec)) { continue }
-    # Resolve exact version if spec includes a range like ^ or ~
-    $resolvedVersion = $null
-    $nameOnly = $spec
-    if ($spec -match '@' -and $spec -notmatch '^@') {
-        # scoped or name@range
-        $nameOnly = ($spec -split '@')[0]
-    } elseif ($spec -match '^@') {
-        # scoped package like @scope/name@range
-        $idx = $spec.LastIndexOf('@')
-        if ($idx -gt 0) { $nameOnly = $spec.Substring(0,$idx) }
+    $key = "$name@$version"
+    if ($processed.ContainsKey($key)) {
+        return
     }
+
+    Write-Host "📥 $spec"
     try {
-        $resolvedVersion = (& npm view $spec version 2>$null) -join "" | Out-String
-        $resolvedVersion = $resolvedVersion.Trim()
-    } catch {
-        Write-Host "⚠️  Could not resolve version for $spec"
-        Add-Content -Path $failedFile -Value $spec
-        continue
-    }
-    if ([string]::IsNullOrWhiteSpace($resolvedVersion)) {
-        Write-Host "⚠️  No version resolved for $spec"
-        Add-Content -Path $failedFile -Value $spec
-        continue
-    }
-    $fullSpec = "${nameOnly}@${resolvedVersion}"
-    if ($processed.Contains($fullSpec)) { continue }
+        $encodedName = $name.Replace('/', '%2F')
+        $apiUrl = "$REGISTRY/$encodedName"
+        Write-Host "   📡 Querying registry..."
+        $response = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+        $metadata = $response.Content | ConvertFrom-Json
 
-    # pack
-    $sanitized_name = ($nameOnly -replace '/','-' -replace '@','' -replace '[^a-zA-Z0-9._-]','-')
-    $destName = "$($sanitized_name)-$resolvedVersion.tgz"
-    $dest = Join-Path $TAR_DIR $destName
-    if (Test-Path $dest) { Write-Host "⏭️  Already have $destName; skipping"; $processed.Add($fullSpec) | Out-Null; continue }
-    Write-Host "🧩 npm pack $fullSpec"
-    try {
-        $packOutput = & npm pack $fullSpec 2>&1 | Out-String
-        $tgzfile = Get-ChildItem -Path (Get-Location) -Filter '*.tgz' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($tgzfile) {
-            $movedPath = Join-Path $TAR_DIR $tgzfile.Name
-            Move-Item -Path $tgzfile.FullName -Destination $movedPath -Force
-            if ($tgzfile.Name -ne $destName) { Move-Item -Path $movedPath -Destination $dest -Force }
-            Write-Host "📦 Packed $($tgzfile.Name) -> $destName"
-            $count += 1
+        $version = Resolve-Version $metadata $version
+
+        if (-not $metadata.versions -or -not $metadata.versions.$version) {
+            Write-Host "   ❌ Version $version not found" -ForegroundColor Red
+            $global:failed++
+            $global:failedList += $spec
+            return
+        }
+
+        $versionData = $metadata.versions.$version
+        if (-not $versionData.dist -or -not $versionData.dist.tarball) {
+            Write-Host "   ❌ No tarball URL found" -ForegroundColor Red
+            $global:failed++
+            $global:failedList += $spec
+            return
+        }
+
+        $tarballUrl = $versionData.dist.tarball
+        $filename = "$($name.Replace('/', '-'))-$version.tgz"
+        $filepath = Join-Path $TAR_DIR $filename
+
+        if (Test-Path $filepath) {
+            Write-Host "   ✅ Already have: $filename"
+            $global:success++
         } else {
-            Write-Host "⚠️  npm pack produced no .tgz for $fullSpec"
-            Add-Content -Path $failedFile -Value $fullSpec
-            Write-Host $packOutput
+            Write-Host "   ⬇️  Downloading from registry..."
+            Invoke-WebRequest -Uri $tarballUrl -OutFile $filepath -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop | Out-Null
+            $sizeMB = [Math]::Round((Get-Item $filepath).Length / 1MB, 2)
+            Write-Host "   ✅ Downloaded: $filename ($sizeMB MB)"
+            $global:success++
+        }
+
+        $processed[$key] = $true
+
+        # Recursively download dependencies
+        # Check if the 'dependencies' property exists before attempting to access it
+        if ($versionData | Get-Member -Name 'dependencies' -MemberType NoteProperty -ErrorAction SilentlyContinue) {
+            $depsObject = $versionData.dependencies
+            # If dependencies property exists but is null or empty, it's a root/leaf package
+            if (-not $depsObject -or ($depsObject -is [System.Management.Automation.PSCustomObject] -and (-not ($depsObject | Get-Member -MemberType NoteProperty)))) {
+                Write-Host "   ℹ️  No dependencies found for $($spec) (likely a root/leaf package)." -ForegroundColor DarkGray
+            }
+            # Else, process dependencies
+            elseif ($depsObject -is [System.Management.Automation.PSCustomObject]) {
+                $depNames = $depsObject | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+                if ($depNames) {
+                    foreach ($depName in $depNames) {
+                        $depSpec = "$depName@$($depsObject.$depName)"
+                        Download-Package $depSpec
+                    }
+                }
+            } else {
+                # This case might indicate an unexpected structure, log it.
+                Write-Host "   ⚠️  Unexpected dependencies type for $($spec). Type is $($depsObject.GetType().FullName)" -ForegroundColor Yellow
+            }
+        } else {
+            # 'dependencies' property does not exist at all in the metadata
+            Write-Host "   ℹ️  No dependencies property found for $($spec) (likely a root/leaf package)." -ForegroundColor DarkGray
         }
     } catch {
-        Write-Host "⚠️  npm pack failed for $fullSpec"
-        Add-Content -Path $failedFile -Value $fullSpec
-        Write-Host $_.Exception.Message
-        continue
+        Write-Host "   ❌ Error: $($_.Exception.Message)" -ForegroundColor Red
+        $global:failed++
+        $global:failedList += $spec
     }
-
-    # mark processed
-    $processed.Add($fullSpec) | Out-Null
-
-    # fetch dependencies and enqueue them
-    try {
-        $depsJson = (& npm view $fullSpec dependencies --json 2>$null) -join "" | Out-String
-        if (-not [string]::IsNullOrWhiteSpace($depsJson)) {
-            $deps = $null
-            try { $deps = ConvertFrom-Json $depsJson } catch { $deps = $null }
-            if ($deps) {
-                foreach ($k in $deps.PSObject.Properties.Name) {
-                    $range = $deps.$k
-                    $depSpec = "$k@$range"
-                    try {
-                        $depVersion = (& npm view $depSpec version 2>$null) -join "" | Out-String
-                        $depVersion = $depVersion.Trim()
-                        if (-not [string]::IsNullOrWhiteSpace($depVersion)) { $queue.Enqueue("${k}@${depVersion}") }
-                    } catch { }
-                }
-            }
-        }
-    } catch { }
-
 }
 
-Write-Host "--------------------------------------"
-Write-Host "✅ Tarball fetch complete. New downloads: $count"
-Write-Host "Tarballs are in: $TAR_DIR"
-Get-ChildItem -Path $TAR_DIR -Name -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+foreach ($spec in $packages) {
+    Download-Package $spec
+}
 
-# cleanup
-Pop-Location
-if (Test-Path $TMP_DIR) { Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TMP_DIR }
+# Summary
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║                    DOWNLOAD COMPLETE                       ║" -ForegroundColor Cyan
+Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
 
+$totalSize = 0
+$fileCount = @(Get-ChildItem -Path $TAR_DIR -Filter '*.tgz' -ErrorAction SilentlyContinue).Count
+
+Get-ChildItem -Path $TAR_DIR -Filter '*.tgz' -ErrorAction SilentlyContinue | ForEach-Object {
+    $totalSize += $_.Length
+}
+
+$sizeMB = [Math]::Round($totalSize / 1MB, 2)
+
+Write-Host "📊 Summary:"
+Write-Host "  • Total packages to process: $($packages.Count)"
+Write-Host "  • Successfully downloaded unique packages: $success" -ForegroundColor Green
+Write-Host "  • Failed to download packages: $failed" -ForegroundColor $(if ($failed -gt 0) { "Red" } else { "Green" })
+Write-Host ""
+
+if ($failed -gt 0) {
+    Write-Host "❌ Failed packages:" -ForegroundColor Red
+    $failedList | ForEach-Object { Write-Host "   • $_" }
+    Write-Host ""
+}
+
+Write-Host "📂 Tarballs directory:"
+Write-Host "  • Location: $TAR_DIR"
+Write-Host "  • Files: $fileCount"
+Write-Host "  • Size: $sizeMB MB"
+Write-Host ""
+
+if ($failed -eq 0) {
+    Write-Host "✅ SUCCESS! All specified packages and their dependencies downloaded." -ForegroundColor Green
+} elseif ($success -gt 0) {
+    Write-Host "⚠️  PARTIAL SUCCESS! Some packages or their dependencies failed to download." -ForegroundColor Yellow
+} else {
+    Write-Host "❌ FAILURE! No packages were successfully downloaded." -ForegroundColor Red
+}
+
+Write-Host ""
 exit 0
