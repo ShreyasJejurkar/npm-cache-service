@@ -51,8 +51,8 @@ New-Item -ItemType Directory -Path $TAR_DIR -Force -ErrorAction SilentlyContinue
 Write-Host "📦 Downloading packages..." -ForegroundColor Yellow
 Write-Host ""
 
-$success = 0
-$failed = 0
+$global:success = 0
+$global:failed = 0
 $failedList = @()
 
 function Resolve-Version {
