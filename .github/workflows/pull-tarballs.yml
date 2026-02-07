@@ -53,7 +53,38 @@ jobs:
           }
 
       - name: Upload tarballs artifact
+        id: upload-artifact
         uses: actions/upload-artifact@v4
         with:
           name: offline-tarballs
           path: offline-tarballs.zip
+
+      - name: Generate Short Link
+        shell: pwsh
+        run: |
+          $artifactUrl = "${{ steps.upload-artifact.outputs.artifact-url }}"
+          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          
+          # Use artifact URL if available, otherwise fallback to run URL
+          $targetUrl = if (![string]::IsNullOrEmpty($artifactUrl)) { $artifactUrl } else { $runUrl }
+          
+          Write-Host "Target URL: $targetUrl"
+          try {
+              $encodedUrl = [uri]::EscapeDataString($targetUrl)
+              $shortUrl = Invoke-RestMethod -Uri "https://is.gd/create.php?format=simple&url=$encodedUrl"
+              
+              # 1. Output to Job Summary (Markdown on the run homepage)
+              "### 🚀 Shareable Short Link" >> $env:GITHUB_STEP_SUMMARY
+              "The artifact is ready for download:" >> $env:GITHUB_STEP_SUMMARY
+              "**$shortUrl**" >> $env:GITHUB_STEP_SUMMARY
+
+              # 2. Add a Workflow Notice (visible in the log header and summary)
+              Write-Host "::notice title=Artifact Ready::🚀 Shareable Short Link: $shortUrl"
+
+              # 3. Print to logs with formatting
+              Write-Host "`n--------------------------------------------------"
+              Write-Host "🚀 Shareable Short Link: $shortUrl"
+              Write-Host "--------------------------------------------------`n"
+          } catch {
+              Write-Warning "Failed to shorten link with is.gd. Please use the original URL: $targetUrl"
+          }
