@@ -61,13 +61,11 @@ jobs:
 
       - name: Generate Short Link
         shell: pwsh
-        run: |
-          $artifactUrl = "${{ steps.upload-artifact.outputs.artifact-url }}"
-          $runUrl = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          
-          # Use artifact URL if available, otherwise fallback to run URL
-          $targetUrl = if (![string]::IsNullOrEmpty($artifactUrl)) { $artifactUrl } else { $runUrl }
-          
+        run:
+          |
+          # Build nightly.link URL for direct artifact download
+          $targetUrl = "https://nightly.link/${{ github.repository }}/actions/runs/${{ github.run_id }}/offline-tarballs.zip"
+
           Write-Host "Target URL: $targetUrl"
           try {
               $encodedUrl = [uri]::EscapeDataString($targetUrl)
