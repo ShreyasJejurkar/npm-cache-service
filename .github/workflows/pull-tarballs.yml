@@ -59,7 +59,7 @@ jobs:
           name: offline-tarballs
           path: offline-tarballs.zip
 
-      - name: Generate Short Link
+      - name: Generate Short Link and Summary
         shell: pwsh
         run:
           |
@@ -85,4 +85,19 @@ jobs:
               Write-Host "--------------------------------------------------`n"
           } catch {
               Write-Warning "Failed to shorten link with is.gd. Please use the original URL: $targetUrl"
+          }
+
+          # Add Downloaded Packages List to Summary
+          if (Test-Path downloaded-packages.txt) {
+            $pkgs = Get-Content downloaded-packages.txt
+            $count = $pkgs.Count
+            
+            "`n### 📦 Pulled Packages ($count total)" >> $env:GITHUB_STEP_SUMMARY
+            "<details><summary>Click to view all packages and dependencies</summary>`n" >> $env:GITHUB_STEP_SUMMARY
+            "| Package Spec |" >> $env:GITHUB_STEP_SUMMARY
+            "| :--- |" >> $env:GITHUB_STEP_SUMMARY
+            foreach ($pkg in $pkgs) {
+              "| ``$pkg`` |" >> $env:GITHUB_STEP_SUMMARY
+            }
+            "</details>`n" >> $env:GITHUB_STEP_SUMMARY
           }

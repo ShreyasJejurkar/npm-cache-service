@@ -210,5 +210,12 @@ if ($failed -eq 0) {
     Write-Host "❌ FAILURE! No packages were successfully downloaded." -ForegroundColor Red
 }
 
+# Generate manifest for GitHub Summary
+$manifestPath = Join-Path $BASE_DIR 'downloaded-packages.txt'
+if ($processed.Count -gt 0) {
+    $processed.Keys | Sort-Object | Out-File -FilePath $manifestPath -Encoding utf8
+    Write-Host "📝 Manifest of $($processed.Count) packages created at: $manifestPath" -ForegroundColor Gray
+}
+
 Write-Host ""
 exit 0
