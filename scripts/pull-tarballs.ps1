@@ -19,13 +19,13 @@ $PACKAGES_FILE = Join-Path $BASE_DIR 'packages.txt'
 $TAR_DIR = Join-Path $BASE_DIR 'tarballs'
 $REGISTRY = "https://registry.npmjs.org"
 
-Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║      Downloading NPM Packages - Direct Registry API        ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "      Downloading NPM Packages - Direct Registry API        " -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
 # Read packages
-Write-Host "📋 Reading packages.txt..." -ForegroundColor Yellow
+Write-Host "[*] Reading packages.txt..." -ForegroundColor Yellow
 $packages = @()
 if (Test-Path $PACKAGES_FILE) {
     Get-Content $PACKAGES_FILE | ForEach-Object {
@@ -37,18 +37,18 @@ if (Test-Path $PACKAGES_FILE) {
 }
 
 if ($packages.Count -eq 0) {
-    Write-Host "❌ No packages found in packages.txt" -ForegroundColor Red
+    Write-Host "[!] No packages found in packages.txt" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "✅ Found $($packages.Count) packages to download"
+Write-Host "[+] Found $($packages.Count) packages to download"
 Write-Host ""
 
 # Setup directory
 New-Item -ItemType Directory -Path $TAR_DIR -Force -ErrorAction SilentlyContinue | Out-Null
 
 # Download each package
-Write-Host "📦 Downloading packages..." -ForegroundColor Yellow
+Write-Host "[*] Downloading packages..." -ForegroundColor Yellow
 Write-Host ""
 
 $global:success = 0
@@ -58,9 +58,15 @@ $failedList = @()
 
 function Resolve-Version {
     param($metadata, $requestedVersion)
-    if (-not $requestedVersion -or $requestedVersion -match '^[\^~]') {
+    # If version is missing, 'latest', or contains range characters, try to use the 'latest' dist-tag
+    if (-not $requestedVersion -or $requestedVersion -eq 'latest' -or $requestedVersion -match '[\^~<>=*]') {
         if ($metadata.'dist-tags' -and $metadata.'dist-tags'.latest) {
             return $metadata.'dist-tags'.latest
+        }
+        # Fallback to the highest available version string if latest tag is missing
+        $versions = $metadata.versions | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+        if ($versions) {
+            return ($versions | Sort-Object -Descending)[0]
         }
     }
     return $requestedVersion
@@ -90,18 +96,18 @@ function Download-Package {
         return
     }
 
-    Write-Host "📥 $spec"
+    Write-Host "[->] $spec"
     try {
         $encodedName = $name.Replace('/', '%2F')
         $apiUrl = "$REGISTRY/$encodedName"
-        Write-Host "   📡 Querying registry..."
+        Write-Host "   [.] Querying registry..."
         $response = Invoke-WebRequest -Uri $apiUrl -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
         $metadata = $response.Content | ConvertFrom-Json
 
         $version = Resolve-Version $metadata $version
 
         if (-not $metadata.versions -or -not $metadata.versions.$version) {
-            Write-Host "   ❌ Version $version not found" -ForegroundColor Red
+            Write-Host "   [!] Version $version not found" -ForegroundColor Red
             $global:failed++
             $global:failedList += $spec
             return
@@ -109,7 +115,7 @@ function Download-Package {
 
         $versionData = $metadata.versions.$version
         if (-not $versionData.dist -or -not $versionData.dist.tarball) {
-            Write-Host "   ❌ No tarball URL found" -ForegroundColor Red
+            Write-Host "   [!] No tarball URL found" -ForegroundColor Red
             $global:failed++
             $global:failedList += $spec
             return
@@ -120,45 +126,36 @@ function Download-Package {
         $filepath = Join-Path $TAR_DIR $filename
 
         if (Test-Path $filepath) {
-            Write-Host "   ✅ Already have: $filename"
-            $global:success++
+            Write-Host "   [+] Already have: $filename"
         } else {
-            Write-Host "   ⬇️  Downloading from registry..."
+            Write-Host "   [v] Downloading from registry..."
             Invoke-WebRequest -Uri $tarballUrl -OutFile $filepath -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop | Out-Null
             $sizeMB = [Math]::Round((Get-Item $filepath).Length / 1MB, 2)
-            Write-Host "   ✅ Downloaded: $filename ($sizeMB MB)"
+            Write-Host "   [+] Downloaded: $filename ($sizeMB MB)"
             $global:success++
         }
 
         $processed[$key] = $true
 
-        # Recursively download dependencies
-        # Check if the 'dependencies' property exists before attempting to access it
-        if ($versionData | Get-Member -Name 'dependencies' -MemberType NoteProperty -ErrorAction SilentlyContinue) {
-            $depsObject = $versionData.dependencies
-            # If dependencies property exists but is null or empty, it's a root/leaf package
-            if (-not $depsObject -or ($depsObject -is [System.Management.Automation.PSCustomObject] -and (-not ($depsObject | Get-Member -MemberType NoteProperty)))) {
-                Write-Host "   ℹ️  No dependencies found for $($spec) (likely a root/leaf package)." -ForegroundColor DarkGray
-            }
-            # Else, process dependencies
-            elseif ($depsObject -is [System.Management.Automation.PSCustomObject]) {
-                $depNames = $depsObject | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
-                if ($depNames) {
-                    foreach ($depName in $depNames) {
-                        $depSpec = "$depName@$($depsObject.$depName)"
-                        Download-Package $depSpec
+        # Recursively download dependencies (Regular, Peer, and Optional)
+        $dependencyTypes = @('dependencies', 'peerDependencies', 'optionalDependencies')
+        foreach ($depType in $dependencyTypes) {
+            if ($versionData | Get-Member -Name $depType -MemberType NoteProperty -ErrorAction SilentlyContinue) {
+                $depsObject = $versionData.$depType
+                if ($depsObject -is [System.Management.Automation.PSCustomObject]) {
+                    $depNames = $depsObject | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name
+                    if ($depNames) {
+                        Write-Host "   [:] Processing $depType..." -ForegroundColor DarkCyan
+                        foreach ($depName in $depNames) {
+                            $depSpec = "$depName@$($depsObject.$depName)"
+                            Download-Package $depSpec
+                        }
                     }
                 }
-            } else {
-                # This case might indicate an unexpected structure, log it.
-                Write-Host "   ⚠️  Unexpected dependencies type for $($spec). Type is $($depsObject.GetType().FullName)" -ForegroundColor Yellow
             }
-        } else {
-            # 'dependencies' property does not exist at all in the metadata
-            Write-Host "   ℹ️  No dependencies property found for $($spec) (likely a root/leaf package)." -ForegroundColor DarkGray
         }
     } catch {
-        Write-Host "   ❌ Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   [!] Error: $($_.Exception.Message)" -ForegroundColor Red
         $global:failed++
         $global:failedList += $spec
     }
@@ -170,9 +167,9 @@ foreach ($spec in $packages) {
 
 # Summary
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║                    DOWNLOAD COMPLETE                       ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "                    DOWNLOAD COMPLETE                       " -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host ""
 
 $totalSize = 0
@@ -184,37 +181,37 @@ Get-ChildItem -Path $TAR_DIR -Filter '*.tgz' -ErrorAction SilentlyContinue | For
 
 $sizeMB = [Math]::Round($totalSize / 1MB, 2)
 
-Write-Host "📊 Summary:"
-Write-Host "  • Total packages to process: $($packages.Count)"
-Write-Host "  • Successfully downloaded unique packages: $success" -ForegroundColor Green
-Write-Host "  • Failed to download packages: $failed" -ForegroundColor $(if ($failed -gt 0) { "Red" } else { "Green" })
+Write-Host "Summary:"
+Write-Host "  * Total packages to process: $($packages.Count)"
+Write-Host "  * Successfully downloaded unique packages: $success" -ForegroundColor Green
+Write-Host "  * Failed to download packages: $failed" -ForegroundColor $(if ($failed -gt 0) { "Red" } else { "Green" })
 Write-Host ""
 
 if ($failed -gt 0) {
-    Write-Host "❌ Failed packages:" -ForegroundColor Red
-    $failedList | ForEach-Object { Write-Host "   • $_" }
+    Write-Host "[!] Failed packages:" -ForegroundColor Red
+    $global:failedList | ForEach-Object { Write-Host "   * $_" }
     Write-Host ""
 }
 
-Write-Host "📂 Tarballs directory:"
-Write-Host "  • Location: $TAR_DIR"
-Write-Host "  • Files: $fileCount"
-Write-Host "  • Size: $sizeMB MB"
+Write-Host "Tarballs directory:"
+Write-Host "  * Location: $TAR_DIR"
+Write-Host "  * Files: $fileCount"
+Write-Host "  * Size: $sizeMB MB"
 Write-Host ""
 
 if ($failed -eq 0) {
-    Write-Host "✅ SUCCESS! All specified packages and their dependencies downloaded." -ForegroundColor Green
+    Write-Host "[+] SUCCESS! All specified packages and their dependencies downloaded." -ForegroundColor Green
 } elseif ($success -gt 0) {
-    Write-Host "⚠️  PARTIAL SUCCESS! Some packages or their dependencies failed to download." -ForegroundColor Yellow
+    Write-Host "[!] PARTIAL SUCCESS! Some packages or their dependencies failed to download." -ForegroundColor Yellow
 } else {
-    Write-Host "❌ FAILURE! No packages were successfully downloaded." -ForegroundColor Red
+    Write-Host "[!] FAILURE! No packages were successfully downloaded." -ForegroundColor Red
 }
 
 # Generate manifest for GitHub Summary
 $manifestPath = Join-Path $BASE_DIR 'downloaded-packages.txt'
 if ($processed.Count -gt 0) {
     $processed.Keys | Sort-Object | Out-File -FilePath $manifestPath -Encoding utf8
-    Write-Host "📝 Manifest of $($processed.Count) packages created at: $manifestPath" -ForegroundColor Gray
+    Write-Host "[*] Manifest of $($processed.Count) packages created at: $manifestPath" -ForegroundColor Gray
 }
 
 Write-Host ""
