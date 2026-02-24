@@ -137,8 +137,7 @@ function Download-Package {
 
         $processed[$key] = $true
 
-        # Recursively download dependencies (Regular, Peer,)
-        $dependencyTypes = @('dependencies', 'peerDependencies')
+        $dependencyTypes = @('dependencies', 'peerDependencies', 'optionalDependencies')
         foreach ($depType in $dependencyTypes) {
             if ($versionData | Get-Member -Name $depType -MemberType NoteProperty -ErrorAction SilentlyContinue) {
                 $depsObject = $versionData.$depType
